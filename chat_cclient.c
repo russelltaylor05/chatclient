@@ -42,22 +42,26 @@ main(int argc, char * argv[])
   bufsize= 1024;
   send_buf= (char *) malloc(bufsize);
 
-  printf("Enter the data to send: ");
+  //while(1) {
+    printf("Enter the data to send: ");
+    
+    send_len = 0;
+    while ((send_buf[send_len] = getchar()) != '\n' && send_len < 80) {
+      send_len++;  
+    }	   
+    send_buf[send_len] = '\0';
+            
+    sent =  send(socket_num, send_buf, send_len, 0);
+    if (sent < 0) {
+      perror("send call");
+      exit(-1);
+    }
   
-  send_len = 0;
-  while ((send_buf[send_len] = getchar()) != '\n' && send_len < 80) {
-    send_len++;  
-  }	   
-  send_buf[send_len] = '\0';
-          
-  sent =  send(socket_num, send_buf, send_len, 0);
-  if (sent < 0) {
-    perror("send call");
-    exit(-1);
-  }
+    printf("String sent: %s \n", send_buf);
+    printf("Amount of data sent is: %d\n", sent);    
+  //}
+  
 
-  printf("String sent: %s \n", send_buf);
-  printf("Amount of data sent is: %d\n", sent);
       
   close(socket_num);
 }
