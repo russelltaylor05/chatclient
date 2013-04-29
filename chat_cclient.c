@@ -11,10 +11,53 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
+#include <time.h>
 
 #include "cpe464.h"
 #include "chat.h"
 
+//cclient client1 .01 vogon 53002
+
+
+int parseCommand(char *buffer, int length) 
+{
+  char command[3];
+  char *pointer;
+      
+  memcpy(command, buffer, 2);
+  command[2] = '\0';
+
+  if(!strcmp(command, "%M") || !strcmp(command, "%m")) {
+    int handleLength = 0;
+    char *handlePointer, *msgPointer;
+
+    pointer = strchr(buffer, ' ') + 1;
+    handlePointer = pointer;
+
+    while(*pointer != ' ' && *pointer != '\0') {
+      handleLength++;
+      pointer++;
+    }
+    msgPointer = pointer + 1;
+    
+    if(!strlen(msgPointer) || !handleLength) {
+      printf("bad command\n");
+      return -1;
+    }
+        
+  } else if (!strcmp(command, "%L")) {
+    
+  } else if (!strcmp(command, "%E")) {
+  
+  } else {
+    printf("Command '%s' unknown.\n", command);
+  }
+  
+
+  
+  return 0;
+  
+}
 
 int main(int argc, char * argv[])
 {
@@ -22,7 +65,8 @@ int main(int argc, char * argv[])
   char *send_buf, *read_buf;         //data buffer
   int send_len= 0;        //amount of data to send
   int sent= 0;            //actual amount of data sent
-  char *handle, *host, *error, *port;
+  char *handle, *host, *port;
+  double error;
   int exit_command = 0;
   PACKETHEAD header;
   int checksum, seqNum = 0;
@@ -31,7 +75,7 @@ int main(int argc, char * argv[])
   struct timeval timeout;
     
   handle = argv[1];
-  error = atoi(argv[2]);
+  error = atof(argv[2]);
   host = argv[3];
   port = argv[4];
   
@@ -41,7 +85,7 @@ int main(int argc, char * argv[])
 
   if (argc != 5) { printf("usage: %s host-name port-number \n", argv[0]); exit(1); }
   
-  sendErr_init(error, DROP_ON, FLIP_ON, DEBUG_ON, RSEED_OFF);
+  sendErr_init(error, DROP_ON, FLIP_ON, DEBUG_OFF, RSEED_OFF);
   socket_num = tcp_send_setup(host, port);  
   
 
@@ -51,10 +95,11 @@ int main(int argc, char * argv[])
     
     FD_ZERO(&readfds);
     FD_SET(socket_num, &readfds);  
+    FD_SET(0, &readfds);  
     timeout.tv_sec = 1;
     timeout.tv_usec = 10000;
 
-    if (sendErr(socket_num, send_buf, size, 0) < 0) { perror("Send Error: "); exit(EXIT_FAILURE); }  
+    //if (sendErr(socket_num, send_buf, size, 0) < 0) { perror("Send Error: "); exit(EXIT_FAILURE); }  
 
     if(select(socket_num + 1, &readfds, NULL, NULL, &timeout) == -1) { perror("Select"); exit(EXIT_FAILURE); }
 
@@ -69,6 +114,16 @@ int main(int argc, char * argv[])
         successFlag = 1;
       }      
     } 
+    if (FD_ISSET(0, &readfds)) {
+
+      message_len = recv(0, read_buf, READ_BUFFER, 0);
+      printf("msg: %s\n", read_buf);
+      FD_CLR(0, &readfds);
+      FD_CLR(socket_num, &readfds);
+
+    } 
+    printf("around\n");
+
   }
   if(header.flag == 3) {
     printf("Handle already taken. Exiting now ...\n");
@@ -85,6 +140,8 @@ int main(int argc, char * argv[])
       send_len++;  
     }	   
     send_buf[send_len] = '\0';
+    
+    parseCommand(send_buf, send_len);
             
     sent = send(socket_num, send_buf, send_len, 0);
     if (sent < 0) {
@@ -92,8 +149,8 @@ int main(int argc, char * argv[])
       exit(-1);
     }
   
-    printf("String sent: %s \n", send_buf);
-    printf("Amount of data sent is: %d\n", sent);    
+    //printf("String sent: %s \n", send_buf);
+    //printf("Amount of data sent is: %d\n", sent);    
   }
   
   free(send_buf);
