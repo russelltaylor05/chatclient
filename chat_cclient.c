@@ -71,7 +71,7 @@ int main(int argc, char * argv[])
   PACKETHEAD header;
   int checksum, seqNum = 0;
   int successFlag = 0;
-  fd_set readfds;
+  
   struct timeval timeout;
     
   handle = argv[1];
@@ -90,36 +90,38 @@ int main(int argc, char * argv[])
   
 
   size = setupHandle(send_buf, handle, seqNum);
+  if (sendErr(socket_num, send_buf, size, 0) < 0) { perror("Send Error: "); exit(EXIT_FAILURE); }  
 
   while(!successFlag) {
-    
+
+    fd_set readfds;
     FD_ZERO(&readfds);
-    FD_SET(socket_num, &readfds);  
     FD_SET(0, &readfds);  
+    FD_SET(socket_num, &readfds);  
     timeout.tv_sec = 1;
     timeout.tv_usec = 10000;
-
-    //if (sendErr(socket_num, send_buf, size, 0) < 0) { perror("Send Error: "); exit(EXIT_FAILURE); }  
 
     if(select(socket_num + 1, &readfds, NULL, NULL, &timeout) == -1) { perror("Select"); exit(EXIT_FAILURE); }
 
     
     if (FD_ISSET(socket_num, &readfds)) {
       message_len = recv(socket_num, read_buf, READ_BUFFER, 0);
+      if(message_len < 0) {
+        perror("rec Error: "); exit(EXIT_FAILURE); 
+      }
+      printf("len: %d\n", message_len);
       if ((checksum = in_cksum((unsigned short *)read_buf, message_len))) {
         printf("checksum error\n");     
       } else {
         memcpy(&header, read_buf, sizeof(PACKETHEAD));  
         printHeader(&header);
-        successFlag = 1;
+        //successFlag = 1;
       }      
     } 
     if (FD_ISSET(0, &readfds)) {
 
       message_len = recv(0, read_buf, READ_BUFFER, 0);
       printf("msg: %s\n", read_buf);
-      FD_CLR(0, &readfds);
-      FD_CLR(socket_num, &readfds);
 
     } 
     printf("around\n");

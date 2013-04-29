@@ -25,7 +25,7 @@ int main(int argc, char *argv[])
     //printf("sockaddr: %d sockaddr_in %d\n", sizeof(struct sockaddr), sizeof(struct sockaddr_in));
     
     printf("--- Server Started ----\n");
-    server_socket = tcp_server_setup(53001);
+    server_socket = tcp_server_setup(53003);
     printf("Server Socket: %d\n\n", server_socket);
 
     if (listen(server_socket, 5) == -1) { perror("Listen"); }
