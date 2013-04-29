@@ -1,9 +1,3 @@
-/******************************************************************************
- * tcp_server.c
- *
- * CPE 464 - Program 1
- *****************************************************************************/
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -19,83 +13,73 @@
 #include <netdb.h>
 #include <errno.h>
 
+
+#include "cpe464.h"
 #include "chat.h"
 
-main(int argc, char *argv[])
+
+
+int main(int argc, char *argv[])
 {
-    int server_socket= 0;   //socket descriptor for the server socket
-    int client_socket= 0;   //socket descriptor for the client socket
-    char *buf;              //buffer for receiving from client
-    int buffer_size= 1024;  //packet size variable
-    int message_len= 0;     //length of the received message
-    
-    int socket_fd;
-    //struct timeval tv;
-    int flag;
-    int n = 0;
-    int num_fds;
-
-    fd_set fds, readfds;
-    int i, clientaddrlen;
-    int client_sockets[MAX_CLIENTS];
-    int rc, numsocks = 0;
-    int active_socket, new_socket;
-    
-    for(i = 0; i < MAX_CLIENTS; i++) {
-      client_sockets[i] = 0;
-    }
-    
-    //create packet buffer
-    buf = (char *) malloc(buffer_size);
-
+    int server_socket= 0;   //socket descriptor for the server socket        
     //printf("sockaddr: %d sockaddr_in %d\n", sizeof(struct sockaddr), sizeof(struct sockaddr_in));
     
-    //create the server socket
     printf("--- Server Started ----\n");
-    server_socket = tcp_server_setup(53001);
+    server_socket = tcp_server_setup(53002);
     printf("Server Socket: %d\n\n", server_socket);
 
-    if (listen(server_socket, 5) == -1) {
-      perror("Listen");  
-    }
+    if (listen(server_socket, 5) == -1) { perror("Listen"); }
     
+    selectLoop(server_socket);
+    
+    close(server_socket);
+    return 0;
+}
+
+int selectLoop(int server_socket) 
+{
+    int num_fds, i, rc;
+    int client_sockets[MAX_CLIENTS];
+    int active_socket;
+    char *buf;        //buffer for receiving from client
+    int message_len= 0;     //length of the received message
+    fd_set readfds;
+    char **handle_table;
+    int checksum;
+    
+    handle_table = (char **)malloc(sizeof(char *) * MAX_CLIENTS);
+    for(i = 0; i < MAX_CLIENTS; i++) {
+      handle_table[i] = (char *)malloc(sizeof(char) * 255);
+    }
+
+    memset(client_sockets, 0, sizeof(client_sockets));
+    buf = (char *) malloc(READ_BUFFER);
+        
+
     while(1) {
 
       // Populate Socket Sets
-      FD_ZERO(&fds);
-      FD_SET(server_socket, &fds);
+      FD_ZERO(&readfds);
+      FD_SET(server_socket, &readfds);
       for ( i = 0 ; i < MAX_CLIENTS ; i++) {
         if(client_sockets[i] > 0) {
-          FD_SET(client_sockets[i], &fds);
+          FD_SET(client_sockets[i], &readfds);
         }
       }
-
-      readfds = fds;
-      num_fds = fdsMax(server_socket, client_sockets, numsocks);
-      printf("Connected Clients: %d\n", numsocks);
-      printf("Max fds: %d\n", num_fds);
       
+      
+      printf("Connected Clients: %d\n", countClients(client_sockets));
+      printClients(client_sockets, handle_table);
+      
+      num_fds = fdsMax(server_socket, client_sockets);
       if((rc = select(num_fds, &readfds, NULL, NULL, NULL)) == -1) {
         perror("Select Error: ");
         exit(EXIT_FAILURE);
       }
 
-      // Server Socket Activity 
+      // New Client
       if (FD_ISSET(server_socket, &readfds)) {
-        new_socket = accept(server_socket, (struct sockaddr*)0, (socklen_t *)0);
-        if (new_socket == -1) {
-          perror("Accept");
-          exit(EXIT_FAILURE);
-        }                          
-        //add new socket to array of sockets
-        for (i = 0; i < MAX_CLIENTS; i++) {
-          if (client_sockets[i] == 0) {
-            client_sockets[i] = new_socket;
-            printf("New Socket Added: %d\n", client_sockets[i]);
-            i = MAX_CLIENTS;
-            numsocks++;
-          }
-        }
+        setupNewClient(server_socket, client_sockets);
       }          
     
       // Client Socket Activity 
@@ -103,9 +87,9 @@ main(int argc, char *argv[])
         active_socket = client_sockets[i];
         if (FD_ISSET(active_socket, &readfds)) {
 
-          /* Read returns 0 bytes if connections has been closed on other end */
           printf("Reading from socket: %d\n", active_socket);
-          message_len = recv(active_socket, buf, buffer_size, 0);
+          memset(buf, 0, READ_BUFFER);
+          message_len = recv(active_socket, buf, READ_BUFFER, 0);
           
           if (message_len < 0) {
             perror("recv call");
@@ -113,20 +97,113 @@ main(int argc, char *argv[])
           } else if (message_len == 0) {
             printf("Socket %d disconnected\n", active_socket);
             client_sockets[i] = 0;
+            removeSocket(client_sockets[i], client_sockets, handle_table);
             close(active_socket);
-            numsocks--;
-          } else {              
-            printf("Length: %d\n", message_len);
-            printf("Data: %s\n", buf);
+          } else {                        
+            //printf("Length: %d\n", message_len);
+            checksum =  in_cksum((unsigned short *)buf, message_len);               
+            if(checksum == 0) {
+              printf("checksum good: %d\n", checksum);  
+              takeAction(buf, active_socket, client_sockets, (char **)handle_table);
+            } else {
+              printf("checksum error: %d\n", checksum);  
+            }
+            
           }
-    
         }
       }
       printf("\n");
     }
-    
-    /* close the sockets */
-    close(server_socket);
+    return 0;
+}
+
+int takeAction(char *buffer, int active_socket, int *client_sockets, char **handle_table)
+{
+  PACKETHEAD header;
+  int results, size;
+  char *send_buffer;
+
+  if((send_buffer = (char *) malloc(READ_BUFFER)) == NULL) {
+    perror("malloc issue"); 
+    exit(EXIT_FAILURE);    
+  }
+  memset(&header, 0, sizeof(PACKETHEAD));
+  memcpy(&header, buffer, sizeof(PACKETHEAD));
+  printHeader(&header);
+  
+  switch (header.flag) {
+
+  case 1:
+    results = addHandle(buffer, active_socket, client_sockets, handle_table);
+    if (results < 0){
+      size = buildSimpleHeader(send_buffer, 3, 0);
+      removeSocket(active_socket, client_sockets, handle_table);
+    } else {
+      size = buildSimpleHeader(send_buffer, 2, 0);
+    }
+    if (send(active_socket, send_buffer, size, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}    
+    break;
+
+  case 2:
+    printf("Run program 2\n");
+    printf("Please Wait\n");
+    break;
+
+  default:
+    printf("Unknown Flag\n");
+    break;
+  }
+
+  return 0;
+}
+
+
+int addHandle(char *buffer, int active_socket, int *client_sockets, char **handle_table)
+{
+
+  int handle_size = buffer[sizeof(PACKETHEAD)];
+  char temp_handle[255];
+  int i;
+
+  memcpy(temp_handle, &(buffer[sizeof(PACKETHEAD) + 1]), handle_size);  
+  temp_handle[handle_size] = '\0';
+  //printf("Handle: %s\n", temp_handle);
+  //printf("size: %d\n", handle_size);  
+  
+  for( i = 0; i < MAX_CLIENTS; i++) {
+    if(client_sockets[i] != 0 && client_sockets[i] != active_socket) {
+      if(strcmp(temp_handle, handle_table[i]) == 0) {
+        return -1;
+      }      
+    }    
+  }
+  for (i = 0; i < MAX_CLIENTS; i++) {
+    if (client_sockets[i] == active_socket) {
+      memcpy(handle_table[i], (char *)temp_handle, handle_size);       
+    }     
+  }
+  return 0;
+} 
+
+int setupNewClient(int server_socket, int *client_sockets) 
+{
+  int new_socket;
+  int i;
+  
+  new_socket = accept(server_socket, (struct sockaddr*)0, (socklen_t *)0);  
+  if (new_socket == -1) {
+    perror("Accept");
+    exit(EXIT_FAILURE);
+  }                          
+  //add new socket to array of sockets
+  for (i = 0; i < MAX_CLIENTS; i++) {
+    if (client_sockets[i] == 0) {
+      client_sockets[i] = new_socket;
+      printf("New Socket Added: %d\n", client_sockets[i]);
+      i = MAX_CLIENTS;
+    }
+  }
+  return 0;
 }
 
 /* This function sets the server socket.  It lets the system
@@ -168,7 +245,7 @@ int tcp_server_setup(int port)
 }
 
 /* Returns the Max Socket File Descriptor +1 */
-int fdsMax(int server_socket, int *client_sockets, int numsocks) 
+int fdsMax(int server_socket, int *client_sockets) 
 {
   int max = 0;
   int i;
@@ -179,5 +256,28 @@ int fdsMax(int server_socket, int *client_sockets, int numsocks)
   }
   max++;
   return max;
+}
+
+
+int removeSocket(int activeSocket, int *client_sockets, char **handle_table) 
+{
+  int i;
+  for (i = 0; i < MAX_CLIENTS; i++) {
+    if (client_sockets[i] == activeSocket) {
+      client_sockets[i] = 0;
+      handle_table[i][0] = '\0';
+    }
+  }
+  return 0;
+}
+
+int countClients(int *client_sockets) {
+  int i, cnt = 0;
+  for (i = 0; i < MAX_CLIENTS; i++) {
+    if (client_sockets[i] != 0) {
+      cnt++;
+    }
+  }
+  return cnt; 
 }
 

@@ -19,8 +19,9 @@
 #include <netdb.h>
 
 #include "networks.h"
+#include "cpe464.h"
 
-main(int argc, char *argv[])
+int main(int argc, char *argv[])
 {
     int server_socket= 0;   //socket descriptor for the server socket
     int client_socket= 0;   //socket descriptor for the client socket
@@ -32,7 +33,7 @@ main(int argc, char *argv[])
     
     //create packet buffer
     buf=  (char *) malloc(buffer_size);
-
+    
     //create the server socket
     server_socket= tcp_recv_setup();
 
@@ -51,7 +52,9 @@ main(int argc, char *argv[])
     /* close the sockets */
     close(server_socket);
     close(client_socket);
+    return 0;
 }
+
 
 /* This function sets the server socket.  It lets the system
    determine the port number.  The function returns the server

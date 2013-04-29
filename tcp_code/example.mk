@@ -14,7 +14,7 @@ SRCS = $(shell ls *.cpp *.c 2> /dev/null)
 OBJS = $(shell ls *.cpp *.c 2> /dev/null | sed s/\.c[p]*$$/\.o/ )
 LIBNAME = $(shell ls *cpe464*.a)
 
-ALL = cclient server
+ALL = rcopy server
 
 all: $(OBJS) $(ALL)
 
@@ -42,14 +42,7 @@ rcopy: rcopy.c util.c
 	@echo "*** Linking Complete!"
 	@echo "-------------------------------"
 
-server: tcp_server.c 
-	@echo "-------------------------------"
-	@echo "*** Linking $@ with library $(LIBNAME)... "
-	$(CC) $(CFLAGS) -o $@ $^ $(LIBNAME) $(LIBS)
-	@echo "*** Linking Complete!"
-	@echo "-------------------------------"
-
-cclient: tcp_client.c 
+server: server.c util.c
 	@echo "-------------------------------"
 	@echo "*** Linking $@ with library $(LIBNAME)... "
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBNAME) $(LIBS)

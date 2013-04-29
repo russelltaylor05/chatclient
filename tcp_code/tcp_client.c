@@ -18,8 +18,9 @@
 #include <netdb.h>
 
 #include "networks.h"
+#include "cpe464.h"
 
-main(int argc, char * argv[])
+int main(int argc, char * argv[])
 {
     int socket_num;         //socket descriptor
     char *send_buf;         //data buffer
@@ -64,6 +65,7 @@ main(int argc, char * argv[])
     printf("Amount of data sent is: %d\n", sent);
         
     close(socket_num);
+    return 0;
 }
 
 

@@ -1,31 +1,71 @@
-# Makefile for CPE464 program 1
+# Makefile for CPE464 library
 
-CC= gcc
-CFLAGS= -g
+CC = gcc
+CFLAGS = -g -Wall
 
-# The  -lsocket -lnsl are needed for the sockets.
-# The -L/usr/ucblib -lucb gives location for the Berkeley library needed for
-# the bcopy, bzero, and bcmp.  The -R/usr/ucblib tells where to load
-# the runtime library.
+OS = $(shell uname -s)
+ifeq ("$(OS)", "SunOS")
+	LIBS += -lsocket -lnsl
+endif
 
-# The next line is needed on Sun boxes (so uncomment it if your on a
-# sun box)
-# LIBS =  -lsocket -lnsl
+LIBS += -lstdc++
 
-# For Linux/Mac boxes uncomment the next line - the socket and nsl
-# libraries are already in the link path.
-LIBS =
+SRCS = $(shell ls *.cpp *.c 2> /dev/null)
+OBJS = $(shell ls *.cpp *.c 2> /dev/null | sed s/\.c[p]*$$/\.o/ )
+LIBNAME = $(shell ls *cpe464*.a)
 
-all:   cclient server
+ALL = cclient server
 
-cclient: chat_cclient.c chat.h
-	$(CC) $(CFLAGS) -o cclient chat_cclient.c $(LIBS)
+all: $(OBJS) $(ALL)
 
-server: chat_server.c chat.h
-	$(CC) $(CFLAGS) -o server chat_server.c $(LIBS)
+lib:
+	make -f lib.mk
 
-clean:
-	rm server cclient
+echo:
+	@echo "Objects: $(OBJS)"
+	@echo "LIBNAME: $(LIBNAME)"
 
+.cpp.o:
+	@echo "-------------------------------"
+	@echo "*** Building $@"
+	$(CC) -c $(CFLAGS) $< -o $@ $(LIBS)
 
+.c.o:
+	@echo "-------------------------------"
+	@echo "*** Building $@"
+	$(CC) -c $(CFLAGS) $< -o $@ $(LIBS)
 
+rcopy: rcopy.c util.c
+	@echo "-------------------------------"
+	@echo "*** Linking $@ with library $(LIBNAME)... "
+	$(CC) $(CFLAGS) -o $@ $^ $(LIBNAME) $(LIBS)
+	@echo "*** Linking Complete!"
+	@echo "-------------------------------"
+
+server: chat_server.c chat.c
+	@echo "-------------------------------"
+	@echo "*** Linking $@ with library $(LIBNAME)... "
+	$(CC) $(CFLAGS) -o $@ $^ $(LIBNAME) $(LIBS)
+	@echo "*** Linking Complete!"
+	@echo "-------------------------------"
+
+cclient: chat_cclient.c chat.c
+	@echo "-------------------------------"
+	@echo "*** Linking $@ with library $(LIBNAME)... "
+	$(CC) $(CFLAGS) -o $@ $^ $(LIBNAME) $(LIBS)
+	@echo "*** Linking Complete!"
+	@echo "-------------------------------"
+
+test: test.c
+	@echo "-------------------------------"
+	@echo "*** Linking $@ with library $(LIBNAME)... "
+	$(CC) $(CFLAGS) -o $@ $^ $(LIBNAME)
+	@echo "*** Linking Complete!"
+	@echo "-------------------------------"
+
+# clean targets for Solaris and Linux
+clean: 
+	@echo "-------------------------------"
+	@echo "*** Cleaning Files..."
+	rm -f *.o $(ALL)
+	@echo "-------------------------------"
