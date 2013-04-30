@@ -18,18 +18,18 @@
 
 //cclient client1 .01 vogon 53002
 
+#define STR(x)   #x
+#define SHOW_DEFINE(x) printf("%s=%s\n", #x, STR(x))
 
 int parseCommand(char *buffer, int length, int *state) 
 {
   char command[3];
-
       
   memcpy(command, buffer, 2);
   command[2] = '\0';
 
   if(!strcmp(command, "%M") || !strcmp(command, "%m")) {
-    *state = SEND_MSG;
-        
+    *state = SEND_MSG;        
   } else if (!strcmp(command, "%L")) {
     
   } else if (!strcmp(command, "%E")) {
@@ -55,18 +55,19 @@ int handleResponse(char *read_buf, int *state)
   case 2: // good handle
     *state = 0;
     break;
-
   case 3: // bad handle
     *state = HANDLE_EXIT;
     break;
-
   case 6: // receiving msg
     *state = RECV_MSG;
     break;
-
   case 7: // handle doesn't exist
     *state = HANDLE_NO_EXIST;
     break;
+  case 255: // message success
+    *state = 0;
+    break;
+
 
 
   default:
@@ -76,18 +77,41 @@ int handleResponse(char *read_buf, int *state)
   return response;
 }
 
-void printMsg(char *buffer) 
+
+void sendMsgAck(char *buffer, int socket_num, int seqNum) 
 {
-  char senderHandle[MAX_HANDLE];
+  char ackBuffer[READ_BUFFER];
+  int seqToAck;
+  PACKETHEAD header;
   int senderLength = buffer[sizeof(PACKETHEAD) + buffer[sizeof(PACKETHEAD)] + 1];
   int senderStart = sizeof(PACKETHEAD) + buffer[sizeof(PACKETHEAD)] + 2;
-  int msgStart = sizeof(PACKETHEAD) + buffer[sizeof(PACKETHEAD)] + buffer[(int)buffer[sizeof(PACKETHEAD)]] + 2;
+  int locator = 0;
   
-  memcpy((char *)senderHandle, &(buffer[senderStart]), senderLength);
-  senderHandle[senderLength] = '\0';
+  memcpy(&header, buffer, sizeof(PACKETHEAD));
+  seqToAck = header.seq_num;
+
+  memset(&header, 0, sizeof(PACKETHEAD));  
+  header.seq_num = seqNum;
+  header.checksum = 0;
+  header.flag = 255;
+
+  memcpy(&(ackBuffer[locator]), &header, sizeof(PACKETHEAD));
+  locator += sizeof(PACKETHEAD);
   
-  printf("%s: %s\n", senderHandle, &(buffer[msgStart]));
+  memcpy(&(ackBuffer[locator]), &(seqToAck), sizeof(header.seq_num));
+  locator += sizeof(header.seq_num);
+
+  memcpy(&(ackBuffer[locator]), &(senderLength), 1);
+  locator++;
   
+  memcpy(&(ackBuffer[locator]), &(buffer[senderStart]), senderLength);
+  locator += senderLength;
+  
+  header.checksum = in_cksum((unsigned short *)ackBuffer, locator);
+  memcpy(ackBuffer, &header, sizeof(PACKETHEAD));
+  
+  //printf("send length: %d\n", locator);
+  if (sendErr(socket_num, ackBuffer, locator, 0) < 0) { perror("Send Error: "); exit(EXIT_FAILURE); }
 }
 
 
@@ -103,6 +127,7 @@ int main(int argc, char * argv[])
   int state = HANDLE_TRANSMIT;
   int temp;
   char tmpHandle[MAX_HANDLE];
+  int waitCnt = 0;
   
   struct timeval timeout;
     
@@ -117,7 +142,7 @@ int main(int argc, char * argv[])
 
   if (argc != 5) { printf("usage: %s host-name port-number \n", argv[0]); exit(1); }
   
-  sendErr_init(error, DROP_ON, FLIP_ON, DEBUG_OFF, RSEED_OFF);
+  sendErr_init(error, DROP_ON, FLIP_ON, DEBUG_ON, RSEED_OFF);
   socket_num = tcp_send_setup(host, port);  
   
 
@@ -131,8 +156,14 @@ int main(int argc, char * argv[])
     timeout.tv_sec = 0;
     timeout.tv_usec = 500000;
     
-    if((temp = select(socket_num + 1, &readfds, NULL, NULL, &timeout)) == -1) { perror("Select"); exit(EXIT_FAILURE); }      
-
+    
+    if (state != 0) {
+      if((temp = select(socket_num + 1, &readfds, NULL, NULL, &timeout)) == -1) { perror("Select"); exit(EXIT_FAILURE); }
+    } else {
+      if((temp = select(socket_num + 1, &readfds, NULL, NULL, NULL)) == -1) { perror("Select"); exit(EXIT_FAILURE); }        
+    }
+    
+    //printf("state: %d\n", state);
     if (FD_ISSET(socket_num, &readfds)) {
       
       if((message_len = recv(socket_num, read_buf, READ_BUFFER, 0)) < 0) { perror("rec Error: "); exit(EXIT_FAILURE); }
@@ -175,17 +206,27 @@ int main(int argc, char * argv[])
     case SEND_MSG:
       printf("STATE: SEND_MSG\n");
       if((send_len = sendMsg(send_buf, socket_num, 0, handle)) < 0) {
-        printf("bad msg format");  
+        printf("bad msg format\n");  
       } else {
         state = MSG_WAIT;
+        waitCnt = 0;
       }
       printPrompt();
+      break;
+
+    case MSG_WAIT:
+      printf("STATE: MSG_WAIT\n");
+      waitCnt++;
+      if(waitCnt == 2) {
+        state = SEND_MSG;
+      }      
       break;
       
     case RECV_MSG:
       printMsg(read_buf);
-      printPrompt(); 
-      state = 0;           
+      sendMsgAck(read_buf, socket_num, 0);
+      printPrompt();      
+      state = 0;
       break;
      
     case HANDLE_NO_EXIST:
@@ -198,11 +239,8 @@ int main(int argc, char * argv[])
   
     default:    
       break;
-    }
-    
-    
+    }  
   }
-  
   
   free(send_buf);
   free(read_buf);  
@@ -210,6 +248,21 @@ int main(int argc, char * argv[])
   
   return 0;
 }
+
+
+void printMsg(char *buffer) 
+{
+  char senderHandle[MAX_HANDLE];
+  int senderLength = buffer[sizeof(PACKETHEAD) + buffer[sizeof(PACKETHEAD)] + 1];
+  int senderStart = sizeof(PACKETHEAD) + buffer[sizeof(PACKETHEAD)] + 2;
+  int msgStart = sizeof(PACKETHEAD) + buffer[sizeof(PACKETHEAD)] + buffer[(int)buffer[sizeof(PACKETHEAD)]] + 2;
+  
+  memcpy((char *)senderHandle, &(buffer[senderStart]), senderLength);
+  senderHandle[senderLength] = '\0';
+  
+  printf("%s: %s\n", senderHandle, &(buffer[msgStart]));
+}
+
 
 
 int sendMsg(char *buffer, int socket_num, int seq, char *srcHandle) 

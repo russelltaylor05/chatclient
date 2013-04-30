@@ -8,7 +8,7 @@
    
 #define MAX_CLIENTS 100
 #define MAX_MSG 1000
-#define MAX_HANDLE 100
+#define MAX_HANDLE 255
 #define READ_BUFFER 2048
 
 #define HANDLE_TRANSMIT 1
@@ -18,6 +18,7 @@
 #define MSG_WAIT        5
 #define HANDLE_NO_EXIST 6
 #define RECV_MSG        7
+#define MSG_ACK         8
 
 
 #pragma pack(1)
@@ -49,6 +50,7 @@ void sendHandleNoExist(int active_socket, char *buffer);
 int tcp_send_setup(char *host_name, char *port);
 int setupHandle(char *send_buf, char *handle, int seqNum);
 int sendMsg(char *buffer, int socket_num, int seq, char *srcHandle);
+void printMsg(char *buffer);
 void printPrompt(); 
 
 

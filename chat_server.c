@@ -25,7 +25,7 @@ int main(int argc, char *argv[])
     //printf("sockaddr: %d sockaddr_in %d\n", sizeof(struct sockaddr), sizeof(struct sockaddr_in));
     
     printf("--- Server Started ----\n");
-    server_socket = tcp_server_setup(53004);
+    server_socket = tcp_server_setup(53001);
     printf("Server Socket: %d\n\n", server_socket);
 
     if (listen(server_socket, 5) == -1) { perror("Listen"); }
@@ -122,7 +122,7 @@ int takeAction(char *buffer, int bufferLen, int active_socket, int *client_socke
   PACKETHEAD header;
   int results, size;
   char *send_buffer;
-  char destHandle[100];
+  char destHandle[MAX_HANDLE];
   int destSocket;
   
   if((send_buffer = (char *) malloc(READ_BUFFER)) == NULL) {
@@ -162,8 +162,21 @@ int takeAction(char *buffer, int bufferLen, int active_socket, int *client_socke
     } else {
       if (send(destSocket, buffer, bufferLen, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}
     }
-
     break;
+
+  case 255:
+    size = buffer[sizeof(PACKETHEAD) + 4];
+    memcpy((char *)destHandle, &(buffer[sizeof(PACKETHEAD) + 5]), size);
+    destHandle[size] = '\0';
+    
+    if(!(destSocket = checkHandleExists(destHandle, handle_table, client_sockets))) {
+      printf("handle does not exists\n");
+      sendHandleNoExist(active_socket, buffer);
+    } else {
+      if (send(destSocket, buffer, bufferLen, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}
+    }
+    break;
+    
 
   default:
     printf("Unknown Flag\n");
@@ -314,7 +327,6 @@ int checkHandleExists(char *handle, char **handle_table, int *client_sockets)
 void sendHandleNoExist(int active_socket, char *buffer)
 {
   PACKETHEAD header;
-  int seq;
   int size = buffer[sizeof(PACKETHEAD)] + sizeof(PACKETHEAD) + 1;
   
   memset(&header, 0, sizeof(PACKETHEAD));
