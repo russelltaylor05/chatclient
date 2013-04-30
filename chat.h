@@ -11,6 +11,14 @@
 #define MAX_HANDLE 100
 #define READ_BUFFER 2048
 
+#define HANDLE_TRANSMIT 1
+#define HANDLE_CONFIRM  2
+#define HANDLE_EXIT     3
+#define SEND_MSG        4
+#define MSG_WAIT        5
+#define HANDLE_NO_EXIST 6
+#define RECV_MSG        7
+
 
 #pragma pack(1)
 typedef struct packet_head {
@@ -27,16 +35,21 @@ int selectLoop(int server_socket);
 int setupNewClient(int server_socket, int *client_sockets);
 int fdsMax(int server_socket, int *client_sockets);
 
-int takeAction(char *buffer, int active_socket, int *client_sockets, char **handle_table);
+int takeAction(char *buffer, int bufferLen, int active_socket, int *client_sockets, char **handle_table);
 int addHandle(char *buffer, int active_socket, int *client_sockets, char **handle_table);
 
 int removeSocket(int activeSocket, int *client_sockets, char **handle_table);
 int countClients(int *client_sockets);
 
+int checkHandleExists(char *handle, char **handle_table, int *client_sockets);
+void sendHandleNoExist(int active_socket, char *buffer);
+
 
 // Client
 int tcp_send_setup(char *host_name, char *port);
 int setupHandle(char *send_buf, char *handle, int seqNum);
+int sendMsg(char *buffer, int socket_num, int seq, char *srcHandle);
+void printPrompt(); 
 
 
 /* General */

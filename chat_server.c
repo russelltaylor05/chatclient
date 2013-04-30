@@ -25,7 +25,7 @@ int main(int argc, char *argv[])
     //printf("sockaddr: %d sockaddr_in %d\n", sizeof(struct sockaddr), sizeof(struct sockaddr_in));
     
     printf("--- Server Started ----\n");
-    server_socket = tcp_server_setup(53003);
+    server_socket = tcp_server_setup(53004);
     printf("Server Socket: %d\n\n", server_socket);
 
     if (listen(server_socket, 5) == -1) { perror("Listen"); }
@@ -68,6 +68,7 @@ int selectLoop(int server_socket)
       }
       
       
+      printf("-----------------------\n");
       printf("Connected Clients: %d\n", countClients(client_sockets));
       printClients(client_sockets, handle_table);
       
@@ -100,11 +101,9 @@ int selectLoop(int server_socket)
             removeSocket(client_sockets[i], client_sockets, handle_table);
             close(active_socket);
           } else {                        
-            //printf("Length: %d\n", message_len);
             checksum =  in_cksum((unsigned short *)buf, message_len);               
             if(checksum == 0) {
-              printf("checksum good: %d\n", checksum);  
-              takeAction(buf, active_socket, client_sockets, (char **)handle_table);
+              takeAction(buf, message_len, active_socket, client_sockets, (char **)handle_table);
             } else {
               printf("checksum error: %d\n", checksum);  
             }
@@ -117,12 +116,15 @@ int selectLoop(int server_socket)
     return 0;
 }
 
-int takeAction(char *buffer, int active_socket, int *client_sockets, char **handle_table)
+
+int takeAction(char *buffer, int bufferLen, int active_socket, int *client_sockets, char **handle_table)
 {
   PACKETHEAD header;
   int results, size;
   char *send_buffer;
-
+  char destHandle[100];
+  int destSocket;
+  
   if((send_buffer = (char *) malloc(READ_BUFFER)) == NULL) {
     perror("malloc issue"); 
     exit(EXIT_FAILURE);    
@@ -147,6 +149,20 @@ int takeAction(char *buffer, int active_socket, int *client_sockets, char **hand
   case 2:
     printf("Run program 2\n");
     printf("Please Wait\n");
+    break;
+
+  case 6: // msg send
+    size = buffer[sizeof(PACKETHEAD)];
+    memcpy((char *)destHandle, &(buffer[sizeof(PACKETHEAD) + 1]), size);
+    destHandle[size] = '\0';
+    
+    if(!(destSocket = checkHandleExists(destHandle, handle_table, client_sockets))) {
+      printf("handle does not exists\n");
+      sendHandleNoExist(active_socket, buffer);
+    } else {
+      if (send(destSocket, buffer, bufferLen, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}
+    }
+
     break;
 
   default:
@@ -281,3 +297,35 @@ int countClients(int *client_sockets) {
   return cnt; 
 }
 
+// returns socket # if it exists. 0 if it doesn't
+int checkHandleExists(char *handle, char **handle_table, int *client_sockets)
+{
+  int i;
+  for( i = 0; i < MAX_CLIENTS; i++) {
+    if(client_sockets[i] != 0) {
+      if(strcmp(handle, handle_table[i]) == 0) {
+        return client_sockets[i];
+      }      
+    }    
+  }
+  return 0;
+}
+
+void sendHandleNoExist(int active_socket, char *buffer)
+{
+  PACKETHEAD header;
+  int seq;
+  int size = buffer[sizeof(PACKETHEAD)] + sizeof(PACKETHEAD) + 1;
+  
+  memset(&header, 0, sizeof(PACKETHEAD));
+  memcpy(&header, buffer, sizeof(PACKETHEAD));  
+  header.flag = 7;
+  header.checksum = 0;
+  
+  memcpy(buffer, &header, sizeof(PACKETHEAD));
+  header.checksum =  in_cksum((unsigned short *)buffer, size);
+  memcpy(buffer, &header, sizeof(PACKETHEAD));
+  
+  if (send(active_socket, buffer, size, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}
+
+}
