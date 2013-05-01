@@ -12,7 +12,7 @@
 #define READ_BUFFER 2048
 
 #define HANDLE_TRANSMIT 1
-#define HANDLE_CONFIRM  2
+#define HANDLE_WAIT     2
 #define HANDLE_EXIT     3
 #define SEND_MSG        4
 #define MSG_WAIT        5
@@ -50,8 +50,9 @@ void sendHandleNoExist(int active_socket, char *buffer);
 int tcp_send_setup(char *host_name, char *port);
 int setupHandle(char *send_buf, char *handle, int seqNum);
 int sendMsg(char *buffer, int socket_num, int seq, char *srcHandle);
-void printMsg(char *buffer);
-void printPrompt(); 
+void printMsg(char *buffer, char **activePeers, int *msgSeqTracker);
+void printPrompt();
+void sendMsgAck(char *buffer, int socket_num, int seqNum);
 
 
 /* General */

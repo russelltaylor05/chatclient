@@ -25,9 +25,10 @@ int main(int argc, char *argv[])
     //printf("sockaddr: %d sockaddr_in %d\n", sizeof(struct sockaddr), sizeof(struct sockaddr_in));
     
     printf("--- Server Started ----\n");
-    server_socket = tcp_server_setup(53001);
+    server_socket = tcp_server_setup(53002);
     printf("Server Socket: %d\n\n", server_socket);
 
+    sendErr_init(0, DROP_ON, FLIP_ON, DEBUG_ON, RSEED_OFF);
     if (listen(server_socket, 5) == -1) { perror("Listen"); }
     
     selectLoop(server_socket);
@@ -46,10 +47,11 @@ int selectLoop(int server_socket)
     fd_set readfds;
     char **handle_table;
     int checksum;
+    int seqNum;
     
     handle_table = (char **)malloc(sizeof(char *) * MAX_CLIENTS);
     for(i = 0; i < MAX_CLIENTS; i++) {
-      handle_table[i] = (char *)malloc(sizeof(char) * 255);
+      handle_table[i] = (char *)malloc(sizeof(char) * MAX_HANDLE);
     }
 
     memset(client_sockets, 0, sizeof(client_sockets));
@@ -67,11 +69,7 @@ int selectLoop(int server_socket)
         }
       }
       
-      
-      printf("-----------------------\n");
-      printf("Connected Clients: %d\n", countClients(client_sockets));
-      printClients(client_sockets, handle_table);
-      
+            
       num_fds = fdsMax(server_socket, client_sockets);
       if((rc = select(num_fds, &readfds, NULL, NULL, NULL)) == -1) {
         perror("Select Error: ");
@@ -81,6 +79,8 @@ int selectLoop(int server_socket)
       // New Client
       if (FD_ISSET(server_socket, &readfds)) {
         setupNewClient(server_socket, client_sockets);
+        //printf("Connected Clients: %d\n", countClients(client_sockets));
+        //printClients(client_sockets, handle_table);
       }          
     
       // Client Socket Activity 
@@ -99,7 +99,7 @@ int selectLoop(int server_socket)
             printf("Socket %d disconnected\n", active_socket);
             client_sockets[i] = 0;
             removeSocket(client_sockets[i], client_sockets, handle_table);
-            close(active_socket);
+            close(active_socket);            
           } else {                        
             checksum =  in_cksum((unsigned short *)buf, message_len);               
             if(checksum == 0) {
@@ -131,10 +131,10 @@ int takeAction(char *buffer, int bufferLen, int active_socket, int *client_socke
   }
   memset(&header, 0, sizeof(PACKETHEAD));
   memcpy(&header, buffer, sizeof(PACKETHEAD));
-  printHeader(&header);
+  header.seq_num = ntohl(header.seq_num);
+  //printHeader(&header);
   
   switch (header.flag) {
-
   case 1:
     results = addHandle(buffer, active_socket, client_sockets, handle_table);
     if (results < 0){
@@ -143,12 +143,10 @@ int takeAction(char *buffer, int bufferLen, int active_socket, int *client_socke
     } else {
       size = buildSimpleHeader(send_buffer, 2, 0);
     }
-    if (send(active_socket, send_buffer, size, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}    
+    if (sendErr(active_socket, send_buffer, size, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}    
     break;
 
   case 2:
-    printf("Run program 2\n");
-    printf("Please Wait\n");
     break;
 
   case 6: // msg send
@@ -160,7 +158,7 @@ int takeAction(char *buffer, int bufferLen, int active_socket, int *client_socke
       printf("handle does not exists\n");
       sendHandleNoExist(active_socket, buffer);
     } else {
-      if (send(destSocket, buffer, bufferLen, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}
+      if (sendErr(destSocket, buffer, bufferLen, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}
     }
     break;
 
@@ -173,7 +171,7 @@ int takeAction(char *buffer, int bufferLen, int active_socket, int *client_socke
       printf("handle does not exists\n");
       sendHandleNoExist(active_socket, buffer);
     } else {
-      if (send(destSocket, buffer, bufferLen, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}
+      if (sendErr(destSocket, buffer, bufferLen, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}
     }
     break;
     
@@ -338,6 +336,6 @@ void sendHandleNoExist(int active_socket, char *buffer)
   header.checksum =  in_cksum((unsigned short *)buffer, size);
   memcpy(buffer, &header, sizeof(PACKETHEAD));
   
-  if (send(active_socket, buffer, size, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}
+  if (sendErr(active_socket, buffer, size, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}
 
 }

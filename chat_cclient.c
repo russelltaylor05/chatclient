@@ -42,33 +42,39 @@ int parseCommand(char *buffer, int length, int *state)
 }
 
 
-int handleResponse(char *read_buf, int *state) 
+int handleResponse(char *read_buf, int *state, int *seqNum, int socket_num, char **activePeers, int *msgSeqTracker) 
 {
   PACKETHEAD header;
   int response = 0;
 
   memcpy(&header, read_buf, sizeof(PACKETHEAD));  
-  //printHeader(&header);
 
   switch (header.flag) {
-  
   case 2: // good handle
     *state = 0;
+    *seqNum = *seqNum + 1;
     break;
+
   case 3: // bad handle
-    *state = HANDLE_EXIT;
+    printf("Handle already taken. Exiting now ...\n");
+    *state = 0;
+    response = 1;
     break;
+
   case 6: // receiving msg
-    *state = RECV_MSG;
+    printMsg(read_buf, activePeers, msgSeqTracker);
+    sendMsgAck(read_buf, socket_num, *seqNum);
+    printPrompt();    
     break;
+    
   case 7: // handle doesn't exist
     *state = HANDLE_NO_EXIST;
     break;
+    
   case 255: // message success
     *state = 0;
+    *seqNum = *seqNum + 1;
     break;
-
-
 
   default:
     break;
@@ -78,58 +84,36 @@ int handleResponse(char *read_buf, int *state)
 }
 
 
-void sendMsgAck(char *buffer, int socket_num, int seqNum) 
-{
-  char ackBuffer[READ_BUFFER];
-  int seqToAck;
-  PACKETHEAD header;
-  int senderLength = buffer[sizeof(PACKETHEAD) + buffer[sizeof(PACKETHEAD)] + 1];
-  int senderStart = sizeof(PACKETHEAD) + buffer[sizeof(PACKETHEAD)] + 2;
-  int locator = 0;
-  
-  memcpy(&header, buffer, sizeof(PACKETHEAD));
-  seqToAck = header.seq_num;
-
-  memset(&header, 0, sizeof(PACKETHEAD));  
-  header.seq_num = seqNum;
-  header.checksum = 0;
-  header.flag = 255;
-
-  memcpy(&(ackBuffer[locator]), &header, sizeof(PACKETHEAD));
-  locator += sizeof(PACKETHEAD);
-  
-  memcpy(&(ackBuffer[locator]), &(seqToAck), sizeof(header.seq_num));
-  locator += sizeof(header.seq_num);
-
-  memcpy(&(ackBuffer[locator]), &(senderLength), 1);
-  locator++;
-  
-  memcpy(&(ackBuffer[locator]), &(buffer[senderStart]), senderLength);
-  locator += senderLength;
-  
-  header.checksum = in_cksum((unsigned short *)ackBuffer, locator);
-  memcpy(ackBuffer, &header, sizeof(PACKETHEAD));
-  
-  //printf("send length: %d\n", locator);
-  if (sendErr(socket_num, ackBuffer, locator, 0) < 0) { perror("Send Error: "); exit(EXIT_FAILURE); }
-}
-
 
 int main(int argc, char * argv[])
 {
-  int socket_num, message_len, size;
+  int socket_num, message_len, size, i;
   char *send_buf, *read_buf;
   int send_len = 0;        
   char *handle, *host, *port;
   double error;
-  int checksum, seqNum = 0;
+  int checksum;
+  int seqNum = 1;
   int exitFlag = 0;
   int state = HANDLE_TRANSMIT;
   int temp;
   char tmpHandle[MAX_HANDLE];
   int waitCnt = 0;
-  
   struct timeval timeout;
+
+  /* peer msg tracking */
+  char **activePeers;
+  int msgSeqTracker[MAX_CLIENTS];
+  memset((int *)msgSeqTracker, 0, sizeof(msgSeqTracker));
+  activePeers = (char **)malloc(sizeof(char *) * MAX_CLIENTS);
+  if(!activePeers) { perror("malloc"); exit(EXIT_FAILURE); }
+  for(i = 0; i < MAX_CLIENTS; i++) {
+    activePeers[i] = (char *)malloc(sizeof(char) * MAX_HANDLE);
+    if (!activePeers[i]) { perror("malloc"); exit(EXIT_FAILURE); }
+    activePeers[i][0] = '\0';
+  }  
+  
+  
     
   handle = argv[1];
   error = atof(argv[2]);
@@ -163,14 +147,14 @@ int main(int argc, char * argv[])
       if((temp = select(socket_num + 1, &readfds, NULL, NULL, NULL)) == -1) { perror("Select"); exit(EXIT_FAILURE); }        
     }
     
-    //printf("state: %d\n", state);
+    printf("state: %d\n", state);
     if (FD_ISSET(socket_num, &readfds)) {
       
       if((message_len = recv(socket_num, read_buf, READ_BUFFER, 0)) < 0) { perror("rec Error: "); exit(EXIT_FAILURE); }
       if ((checksum = in_cksum((unsigned short *)read_buf, message_len))) {
         printf("checksum error. msg_len: %d\n", message_len);        
       } else {
-        handleResponse(read_buf, &state);        
+        exitFlag = handleResponse(read_buf, &state, &seqNum, socket_num, activePeers, msgSeqTracker);
       }      
 
     } else if (FD_ISSET(0, &readfds)) {
@@ -186,26 +170,25 @@ int main(int argc, char * argv[])
     switch (state) {
   
     case HANDLE_TRANSMIT:
-      printf("\nSTATE: HANDLE_TRANSMIT\n");
+      //printf("\nSTATE: HANDLE_TRANSMIT\n");
       printPrompt();
       size = setupHandle(send_buf, handle, seqNum);
       if (sendErr(socket_num, send_buf, size, 0) < 0) { perror("Send Error: "); exit(EXIT_FAILURE); }  
-      state = HANDLE_CONFIRM;
+      state = HANDLE_WAIT;
+      waitCnt = 0;
       break;
 
-    case HANDLE_CONFIRM:  
-      printf("STATE: HANDLE_CONFIRM\n");
+    case HANDLE_WAIT:  
+      //printf("STATE: HANDLE_WAIT\n");
+      waitCnt++;
+      if(waitCnt >= 2) {
+        state = HANDLE_TRANSMIT;
+      }      
       break;
   
-    case HANDLE_EXIT:  
-      printf("STATE: HANDLE_EXIT\n");
-      printf("Handle already taken. Exiting now ...\n");
-      exitFlag = 1;
-      break;
-
     case SEND_MSG:
-      printf("STATE: SEND_MSG\n");
-      if((send_len = sendMsg(send_buf, socket_num, 0, handle)) < 0) {
+      //printf("STATE: SEND_MSG\n");
+      if((send_len = sendMsg(send_buf, socket_num, seqNum, handle)) < 0) {
         printf("bad msg format\n");  
       } else {
         state = MSG_WAIT;
@@ -215,19 +198,15 @@ int main(int argc, char * argv[])
       break;
 
     case MSG_WAIT:
-      printf("STATE: MSG_WAIT\n");
+      //printf("STATE: MSG_WAIT\n");
       waitCnt++;
-      if(waitCnt == 2) {
+      if(waitCnt <= 2) {
         state = SEND_MSG;
       }      
       break;
       
-    case RECV_MSG:
-      printMsg(read_buf);
-      sendMsgAck(read_buf, socket_num, 0);
-      printPrompt();      
-      state = 0;
-      break;
+    //case RECV_MSG:
+    //  break;
      
     case HANDLE_NO_EXIST:
       memcpy(tmpHandle, &(read_buf[sizeof(PACKETHEAD) + 1]), read_buf[sizeof(PACKETHEAD)]);
@@ -250,20 +229,103 @@ int main(int argc, char * argv[])
 }
 
 
-void printMsg(char *buffer) 
+int checkPeerExists(char *handle, char **activePeers)
+{
+  int i;
+  for( i = 0; i < MAX_CLIENTS; i++) {
+    if(strcmp(handle, activePeers[i]) == 0) {
+      return i;
+    }  
+  }
+  return -1;
+}
+
+int addPeer(char *handle, char **activePeers) {
+  int i;
+  //add new socket to array of sockets
+  for (i = 0; i < MAX_CLIENTS; i++) {
+    if(strlen(activePeers[i]) == 0) {
+      memcpy(activePeers[i], handle, strlen(handle));
+      return i;
+    }
+  }  
+  return -1;
+}
+
+void printPeerTable(char **activePeers, int *msgSeqTracker) {
+  int i;
+  for (i = 0; i < MAX_CLIENTS; i++) {
+    if(strlen(activePeers[i])) {
+      printf("%d: \t%s\n", msgSeqTracker[i], activePeers[i]);
+    }
+  }    
+  
+}
+
+void printMsg(char *buffer, char **activePeers, int *msgSeqTracker) 
 {
   char senderHandle[MAX_HANDLE];
+  PACKETHEAD header;
+  int peerId;
+  
   int senderLength = buffer[sizeof(PACKETHEAD) + buffer[sizeof(PACKETHEAD)] + 1];
   int senderStart = sizeof(PACKETHEAD) + buffer[sizeof(PACKETHEAD)] + 2;
   int msgStart = sizeof(PACKETHEAD) + buffer[sizeof(PACKETHEAD)] + buffer[(int)buffer[sizeof(PACKETHEAD)]] + 2;
-  
+    
   memcpy((char *)senderHandle, &(buffer[senderStart]), senderLength);
   senderHandle[senderLength] = '\0';
+  memcpy(&header, buffer, sizeof(PACKETHEAD));
+
+
+  if ((peerId = checkPeerExists(senderHandle, activePeers)) < 0) {
+    peerId= addPeer(senderHandle, activePeers);
+    msgSeqTracker[peerId] = ntohl(header.seq_num);
+  }  
+  printf("--Peer Table--\n");
+  printPeerTable(activePeers, msgSeqTracker);  
+  if(msgSeqTracker[peerId] < ntohl(header.seq_num)) {
+    printf("%s: %s\n", senderHandle, &(buffer[msgStart]));  
+    msgSeqTracker[peerId] = ntohl(header.seq_num);
+  } 
   
-  printf("%s: %s\n", senderHandle, &(buffer[msgStart]));
 }
 
 
+void sendMsgAck(char *buffer, int socket_num, int seqNum) 
+{
+  char ackBuffer[READ_BUFFER];
+  int seqToAck;
+  PACKETHEAD header;
+  int senderLength = buffer[sizeof(PACKETHEAD) + buffer[sizeof(PACKETHEAD)] + 1];
+  int senderStart = sizeof(PACKETHEAD) + buffer[sizeof(PACKETHEAD)] + 2;
+  int locator = 0;
+  
+  memcpy(&header, buffer, sizeof(PACKETHEAD));
+  seqToAck = header.seq_num;
+
+  memset(&header, 0, sizeof(PACKETHEAD));  
+  header.seq_num = htonl(seqNum);
+  header.checksum = 0;
+  header.flag = 255;
+
+  memcpy(&(ackBuffer[locator]), &header, sizeof(PACKETHEAD));
+  locator += sizeof(PACKETHEAD);
+  
+  memcpy(&(ackBuffer[locator]), &(seqToAck), sizeof(header.seq_num));
+  locator += sizeof(header.seq_num);
+
+  memcpy(&(ackBuffer[locator]), &(senderLength), 1);
+  locator++;
+  
+  memcpy(&(ackBuffer[locator]), &(buffer[senderStart]), senderLength);
+  locator += senderLength;
+  
+  header.checksum = in_cksum((unsigned short *)ackBuffer, locator);
+  memcpy(ackBuffer, &header, sizeof(PACKETHEAD));
+  
+  //printf("send length: %d\n", locator);
+  if (sendErr(socket_num, ackBuffer, locator, 0) < 0) { perror("Send Error: "); exit(EXIT_FAILURE); }
+}
 
 int sendMsg(char *buffer, int socket_num, int seq, char *srcHandle) 
 {
@@ -290,7 +352,7 @@ int sendMsg(char *buffer, int socket_num, int seq, char *srcHandle)
   }
 
   memset(&header, 0, sizeof(PACKETHEAD));
-  header.seq_num = seq;
+  header.seq_num = htonl(seq);
   header.checksum = 0;
   header.flag = 6;
   
@@ -343,7 +405,7 @@ int setupHandle(char *send_buf, char *handle, int seqNum)
   int size = sizeof(PACKETHEAD) + 1 + strlen(handle);
   
   memset(&header, 0, sizeof(PACKETHEAD));
-  header.seq_num = seqNum;
+  header.seq_num = htonl(seqNum);
   header.checksum = 0;
   header.flag = 1;
   
