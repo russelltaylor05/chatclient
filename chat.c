@@ -36,13 +36,12 @@ int buildSimpleHeader(char *buffer, int flag, int seqNum)
   int checksum;
   
   memset(&header, 0, sizeof(PACKETHEAD));
-  header.seq_num = seqNum;
+  header.seq_num = htonl(seqNum);
   header.checksum = 0;
   header.flag = flag;
   
   checksum = in_cksum((unsigned short *)&header, sizeof(PACKETHEAD));
-  header.checksum = checksum;
-  
+  header.checksum = checksum;  
   memcpy(buffer, &header, sizeof(PACKETHEAD));
 
   return sizeof(PACKETHEAD);

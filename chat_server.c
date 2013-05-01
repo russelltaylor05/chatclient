@@ -28,7 +28,7 @@ int main(int argc, char *argv[])
     server_socket = tcp_server_setup(53002);
     printf("Server Socket: %d\n\n", server_socket);
 
-    sendErr_init(0, DROP_ON, FLIP_ON, DEBUG_ON, RSEED_OFF);
+    sendErr_init(.5, DROP_ON, FLIP_ON, DEBUG_ON, RSEED_OFF);
     if (listen(server_socket, 5) == -1) { perror("Listen"); }
     
     selectLoop(server_socket);
@@ -36,6 +36,7 @@ int main(int argc, char *argv[])
     close(server_socket);
     return 0;
 }
+
 
 int selectLoop(int server_socket) 
 {
@@ -47,7 +48,7 @@ int selectLoop(int server_socket)
     fd_set readfds;
     char **handle_table;
     int checksum;
-    int seqNum;
+    //int seqNum;
     
     handle_table = (char **)malloc(sizeof(char *) * MAX_CLIENTS);
     for(i = 0; i < MAX_CLIENTS; i++) {
@@ -66,11 +67,13 @@ int selectLoop(int server_socket)
       for ( i = 0 ; i < MAX_CLIENTS ; i++) {
         if(client_sockets[i] > 0) {
           FD_SET(client_sockets[i], &readfds);
+          //printf("socket: %d\n", client_sockets[i]);
         }
       }
       
             
       num_fds = fdsMax(server_socket, client_sockets);
+     
       if((rc = select(num_fds, &readfds, NULL, NULL, NULL)) == -1) {
         perror("Select Error: ");
         exit(EXIT_FAILURE);
@@ -79,8 +82,6 @@ int selectLoop(int server_socket)
       // New Client
       if (FD_ISSET(server_socket, &readfds)) {
         setupNewClient(server_socket, client_sockets);
-        //printf("Connected Clients: %d\n", countClients(client_sockets));
-        //printClients(client_sockets, handle_table);
       }          
     
       // Client Socket Activity 
@@ -88,7 +89,7 @@ int selectLoop(int server_socket)
         active_socket = client_sockets[i];
         if (FD_ISSET(active_socket, &readfds)) {
 
-          printf("Reading from socket: %d\n", active_socket);
+          //printf("Reading from socket: %d\n", active_socket);
           memset(buf, 0, READ_BUFFER);
           message_len = recv(active_socket, buf, READ_BUFFER, 0);
           
@@ -97,17 +98,15 @@ int selectLoop(int server_socket)
             exit(EXIT_FAILURE);
           } else if (message_len == 0) {
             printf("Socket %d disconnected\n", active_socket);
-            client_sockets[i] = 0;
             removeSocket(client_sockets[i], client_sockets, handle_table);
-            close(active_socket);            
-          } else {                        
-            checksum =  in_cksum((unsigned short *)buf, message_len);               
+            close(active_socket);
+          } else {
+            checksum =  in_cksum((unsigned short *)buf, message_len);
             if(checksum == 0) {
               takeAction(buf, message_len, active_socket, client_sockets, (char **)handle_table);
             } else {
               printf("checksum error: %d\n", checksum);  
-            }
-            
+            }            
           }
         }
       }
@@ -120,10 +119,9 @@ int selectLoop(int server_socket)
 int takeAction(char *buffer, int bufferLen, int active_socket, int *client_sockets, char **handle_table)
 {
   PACKETHEAD header;
-  int results, size;
   char *send_buffer;
   char destHandle[MAX_HANDLE];
-  int destSocket;
+  int destSocket, size;
   
   if((send_buffer = (char *) malloc(READ_BUFFER)) == NULL) {
     perror("malloc issue"); 
@@ -132,21 +130,18 @@ int takeAction(char *buffer, int bufferLen, int active_socket, int *client_socke
   memset(&header, 0, sizeof(PACKETHEAD));
   memcpy(&header, buffer, sizeof(PACKETHEAD));
   header.seq_num = ntohl(header.seq_num);
-  //printHeader(&header);
   
   switch (header.flag) {
-  case 1:
-    results = addHandle(buffer, active_socket, client_sockets, handle_table);
-    if (results < 0){
+
+  case 1: // Handle Add
+    if (!(addHandle(buffer, active_socket, client_sockets, handle_table))){
       size = buildSimpleHeader(send_buffer, 3, 0);
-      removeSocket(active_socket, client_sockets, handle_table);
     } else {
       size = buildSimpleHeader(send_buffer, 2, 0);
+      printf("Connected Clients: %d\n", countClients(client_sockets));
+      printClients(client_sockets, handle_table);
     }
     if (sendErr(active_socket, send_buffer, size, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}    
-    break;
-
-  case 2:
     break;
 
   case 6: // msg send
@@ -161,18 +156,20 @@ int takeAction(char *buffer, int bufferLen, int active_socket, int *client_socke
       if (sendErr(destSocket, buffer, bufferLen, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}
     }
     break;
-
-  case 255:
+    
+  case 8: // client exit request
+    size = buildSimpleHeader(send_buffer, 9, 0);
+    if (sendErr(active_socket, send_buffer, size, 0) < 0) { perror("Send Error: "); exit(EXIT_FAILURE); }  
+    break;
+  case 10: //handle cnt request
+    break;
+    
+  case 255: // MSG Ack
     size = buffer[sizeof(PACKETHEAD) + 4];
     memcpy((char *)destHandle, &(buffer[sizeof(PACKETHEAD) + 5]), size);
     destHandle[size] = '\0';
-    
-    if(!(destSocket = checkHandleExists(destHandle, handle_table, client_sockets))) {
-      printf("handle does not exists\n");
-      sendHandleNoExist(active_socket, buffer);
-    } else {
-      if (sendErr(destSocket, buffer, bufferLen, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}
-    }
+    destSocket = checkHandleExists(destHandle, handle_table, client_sockets);
+    if (sendErr(destSocket, buffer, bufferLen, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}    
     break;
     
 
@@ -184,7 +181,7 @@ int takeAction(char *buffer, int bufferLen, int active_socket, int *client_socke
   return 0;
 }
 
-
+// return 1 for success, 0 for duplicate handle
 int addHandle(char *buffer, int active_socket, int *client_sockets, char **handle_table)
 {
 
@@ -194,22 +191,23 @@ int addHandle(char *buffer, int active_socket, int *client_sockets, char **handl
 
   memcpy(temp_handle, &(buffer[sizeof(PACKETHEAD) + 1]), handle_size);  
   temp_handle[handle_size] = '\0';
-  //printf("Handle: %s\n", temp_handle);
-  //printf("size: %d\n", handle_size);  
   
+  // dup check
   for( i = 0; i < MAX_CLIENTS; i++) {
     if(client_sockets[i] != 0 && client_sockets[i] != active_socket) {
       if(strcmp(temp_handle, handle_table[i]) == 0) {
-        return -1;
+        return 0;
       }      
     }    
   }
   for (i = 0; i < MAX_CLIENTS; i++) {
     if (client_sockets[i] == active_socket) {
       memcpy(handle_table[i], (char *)temp_handle, handle_size);       
+      //handle_table[i][handle_size] = '\0';
+      printf("handle added: %s\n", handle_table[i]);
     }     
   }
-  return 0;
+  return 1;
 } 
 
 int setupNewClient(int server_socket, int *client_sockets) 
@@ -286,16 +284,16 @@ int fdsMax(int server_socket, int *client_sockets)
 }
 
 
-int removeSocket(int activeSocket, int *client_sockets, char **handle_table) 
+void removeSocket(int activeSocket, int *client_sockets, char **handle_table) 
 {
   int i;
   for (i = 0; i < MAX_CLIENTS; i++) {
     if (client_sockets[i] == activeSocket) {
       client_sockets[i] = 0;
+      memset(handle_table[i], 0, MAX_HANDLE);
       handle_table[i][0] = '\0';
     }
   }
-  return 0;
 }
 
 int countClients(int *client_sockets) {
