@@ -21,11 +21,23 @@
 
 int main(int argc, char *argv[])
 {
-    int server_socket= 0;   //socket descriptor for the server socket        
-    //printf("sockaddr: %d sockaddr_in %d\n", sizeof(struct sockaddr), sizeof(struct sockaddr_in));
+    int server_socket = 0;   //socket descriptor for the server socket        
+    int requestedPort = 0;
+    printf("sockaddr: %d sockaddr_in %d\n", sizeof(struct sockaddr), sizeof(struct sockaddr_in));
+    
+    if (argc < 2) {
+      printf("usage: %s error-percent requested-port\n", argv[0]);
+      printf("\trequest-port will try to setup server using that port.\n");
+      printf("\tIf left blank a random available port will be choosen.\n");
+      printf("\tEX. server .05 53001\n");       
+      exit(1);
+    }
+    if(argc == 3) {
+      requestedPort = atoi(argv[2]);
+    }
     
     printf("--- Server Started ----\n");
-    server_socket = tcp_server_setup(53002);
+    server_socket = tcp_server_setup(requestedPort);
     printf("Server Socket: %d\n\n", server_socket);
 
     sendErr_init(.5, DROP_ON, FLIP_ON, DEBUG_ON, RSEED_OFF);
