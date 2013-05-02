@@ -40,27 +40,22 @@ int main(int argc, char *argv[])
     server_socket = tcp_server_setup(requestedPort);
     printf("Server Socket: %d\n\n", server_socket);
 
-    sendErr_init(.5, DROP_ON, FLIP_ON, DEBUG_ON, RSEED_OFF);
+    sendErr_init(.5, DROP_ON, FLIP_ON, DEBUG_OFF, RSEED_OFF);
     if (listen(server_socket, 5) == -1) { perror("Listen"); }
     
-    selectLoop(server_socket);
+    serverLoop(server_socket);
     
     close(server_socket);
     return 0;
 }
 
 
-int selectLoop(int server_socket) 
+int serverLoop(int server_socket) 
 {
-    int num_fds, i, rc;
+    int active_socket, num_fds, i, message_len= 0, seqNum = 1;
     int client_sockets[MAX_CLIENTS];
-    int active_socket;
-    char *buf;        //buffer for receiving from client
-    int message_len= 0;     //length of the received message
+    char *buf, **handle_table;
     fd_set readfds;
-    char **handle_table;
-    int checksum;
-    //int seqNum;
     
     handle_table = (char **)malloc(sizeof(char *) * MAX_CLIENTS);
     for(i = 0; i < MAX_CLIENTS; i++) {
@@ -68,7 +63,9 @@ int selectLoop(int server_socket)
     }
 
     memset(client_sockets, 0, sizeof(client_sockets));
-    buf = (char *) malloc(READ_BUFFER);
+    if(!(buf = (char *) malloc(READ_BUFFER))) {
+      perror("Malloc Error: "); exit(EXIT_FAILURE);      
+    }
         
 
     while(1) {
@@ -79,14 +76,12 @@ int selectLoop(int server_socket)
       for ( i = 0 ; i < MAX_CLIENTS ; i++) {
         if(client_sockets[i] > 0) {
           FD_SET(client_sockets[i], &readfds);
-          //printf("socket: %d\n", client_sockets[i]);
         }
       }
-      
-            
+                  
       num_fds = fdsMax(server_socket, client_sockets);
      
-      if((rc = select(num_fds, &readfds, NULL, NULL, NULL)) == -1) {
+      if((select(num_fds, &readfds, NULL, NULL, NULL)) == -1) {
         perror("Select Error: ");
         exit(EXIT_FAILURE);
       }
@@ -100,8 +95,6 @@ int selectLoop(int server_socket)
       for (i = 0; i < MAX_CLIENTS; i++) {
         active_socket = client_sockets[i];
         if (FD_ISSET(active_socket, &readfds)) {
-
-          //printf("Reading from socket: %d\n", active_socket);
           memset(buf, 0, READ_BUFFER);
           message_len = recv(active_socket, buf, READ_BUFFER, 0);
           
@@ -109,31 +102,35 @@ int selectLoop(int server_socket)
             perror("recv call");
             exit(EXIT_FAILURE);
           } else if (message_len == 0) {
-            printf("Socket %d disconnected\n", active_socket);
+            //printf("Socket %d disconnected\n", active_socket);
             removeSocket(client_sockets[i], client_sockets, handle_table);
             close(active_socket);
           } else {
-            checksum =  in_cksum((unsigned short *)buf, message_len);
-            if(checksum == 0) {
-              takeAction(buf, message_len, active_socket, client_sockets, (char **)handle_table);
-            } else {
-              printf("checksum error: %d\n", checksum);  
-            }            
+            if(!(in_cksum((unsigned short *)buf, message_len))) {
+              takeAction(buf, message_len, active_socket, client_sockets, (char **)handle_table, &seqNum);
+            }
           }
         }
       }
-      printf("\n");
+      //printf("\n");
     }
     return 0;
 }
 
 
-int takeAction(char *buffer, int bufferLen, int active_socket, int *client_sockets, char **handle_table)
+int takeAction(char *buffer, 
+               int bufferLen, 
+               int active_socket, 
+               int *client_sockets, 
+               char **handle_table,
+               int *seqNum)
 {
   PACKETHEAD header;
   char *send_buffer;
   char destHandle[MAX_HANDLE];
   int destSocket, size;
+  int i, cnt;
+  
   
   if((send_buffer = (char *) malloc(READ_BUFFER)) == NULL) {
     perror("malloc issue"); 
@@ -150,10 +147,11 @@ int takeAction(char *buffer, int bufferLen, int active_socket, int *client_socke
       size = buildSimpleHeader(send_buffer, 3, 0);
     } else {
       size = buildSimpleHeader(send_buffer, 2, 0);
-      printf("Connected Clients: %d\n", countClients(client_sockets));
-      printClients(client_sockets, handle_table);
+      //printf("Connected Clients: %d\n", countClients(client_sockets));
+      //printClients(client_sockets, handle_table);
     }
-    if (sendErr(active_socket, send_buffer, size, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}    
+    if (sendErr(active_socket, send_buffer, size, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}
+    (*seqNum)++;
     break;
 
   case 6: // msg send
@@ -162,18 +160,35 @@ int takeAction(char *buffer, int bufferLen, int active_socket, int *client_socke
     destHandle[size] = '\0';
     
     if(!(destSocket = checkHandleExists(destHandle, handle_table, client_sockets))) {
-      printf("handle does not exists\n");
       sendHandleNoExist(active_socket, buffer);
     } else {
       if (sendErr(destSocket, buffer, bufferLen, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}
     }
+    (*seqNum)++;
     break;
     
   case 8: // client exit request
     size = buildSimpleHeader(send_buffer, 9, 0);
     if (sendErr(active_socket, send_buffer, size, 0) < 0) { perror("Send Error: "); exit(EXIT_FAILURE); }  
+    (*seqNum)++;
     break;
+
   case 10: //handle cnt request
+    size = buildCntHeader(buffer, 11, *seqNum, clientCount(handle_table));    
+    if (sendErr(active_socket, buffer, size, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}
+    (*seqNum)++;
+    break;
+
+  case 12: //handle cnt request
+    cnt = 0; i = 0;
+    while(cnt < grabCntHeader(buffer) && i < MAX_CLIENTS) {
+      if(strlen(handle_table[i]))
+        cnt++;
+      i++;  
+    }
+    size = buildHandleHeader(buffer, handle_table[i-1], 13, *seqNum);    
+    if (sendErr(active_socket, buffer, size, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}
+    (*seqNum)++;
     break;
     
   case 255: // MSG Ack
@@ -182,9 +197,9 @@ int takeAction(char *buffer, int bufferLen, int active_socket, int *client_socke
     destHandle[size] = '\0';
     destSocket = checkHandleExists(destHandle, handle_table, client_sockets);
     if (sendErr(destSocket, buffer, bufferLen, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}    
+    (*seqNum)++;
     break;
     
-
   default:
     printf("Unknown Flag\n");
     break;
@@ -214,9 +229,8 @@ int addHandle(char *buffer, int active_socket, int *client_sockets, char **handl
   }
   for (i = 0; i < MAX_CLIENTS; i++) {
     if (client_sockets[i] == active_socket) {
-      memcpy(handle_table[i], (char *)temp_handle, handle_size);       
-      //handle_table[i][handle_size] = '\0';
-      printf("handle added: %s\n", handle_table[i]);
+      memcpy(handle_table[i], (char *)temp_handle, handle_size);
+      //printf("Handle added: %s\n", handle_table[i]);
     }     
   }
   return 1;
@@ -236,7 +250,7 @@ int setupNewClient(int server_socket, int *client_sockets)
   for (i = 0; i < MAX_CLIENTS; i++) {
     if (client_sockets[i] == 0) {
       client_sockets[i] = new_socket;
-      printf("New Socket Added: %d\n", client_sockets[i]);
+      //printf("New Socket Added: %d\n", client_sockets[i]);
       i = MAX_CLIENTS;
     }
   }
@@ -249,36 +263,35 @@ int setupNewClient(int server_socket, int *client_sockets)
 
 int tcp_server_setup(int port)
 {
-    int server_socket= 0;
-    struct sockaddr_in local;      /* socket address for local side  */
-    socklen_t len= sizeof(local);  /* length of local address        */
+  int server_socket= 0;
+  struct sockaddr_in local;      /* socket address for local side  */
+  socklen_t len= sizeof(local);  /* length of local address        */
 
-    /* create the socket  */
-    server_socket= socket(AF_INET, SOCK_STREAM, 0);
-    if(server_socket < 0) {
-      perror("socket call");
-      exit(1);
-    }
+  /* create the socket  */
+  server_socket= socket(AF_INET, SOCK_STREAM, 0);
+  if(server_socket < 0) {
+    perror("socket call");
+    exit(1);
+  }
 
-    local.sin_family= AF_INET;           //internet family
-    local.sin_addr.s_addr= INADDR_ANY;   //wild card machine address
-    local.sin_port= htons(port);         // 0 means system choose random available
+  local.sin_family= AF_INET;           //internet family
+  local.sin_addr.s_addr= INADDR_ANY;   //wild card machine address
+  local.sin_port= htons(port);         // 0 means system choose random available
 
-    /* bind the name (address) to a port */
-    if (bind(server_socket, (struct sockaddr *) &local, sizeof(local)) < 0) {
-      perror("bind call");
-      exit(-1);
-    }
-    
-    //get the port name and print it out
-    if (getsockname(server_socket, (struct sockaddr*)&local, &len) < 0) {
-      perror("getsockname call");
-      exit(-1);
-    }
-
-    printf("Server port: %d \n", ntohs(local.sin_port));
-	        
-    return server_socket;
+  /* bind the name (address) to a port */
+  if (bind(server_socket, (struct sockaddr *) &local, sizeof(local)) < 0) {
+    perror("bind call");
+    exit(-1);
+  }
+  
+  //get the port name and print it out
+  if (getsockname(server_socket, (struct sockaddr*)&local, &len) < 0) {
+    perror("getsockname call");
+    exit(-1);
+  }
+  printf("Server port: %d \n", ntohs(local.sin_port));
+        
+  return server_socket;
 }
 
 /* Returns the Max Socket File Descriptor +1 */

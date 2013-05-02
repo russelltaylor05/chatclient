@@ -19,53 +19,201 @@
 //cclient client1 .01 vogon 53002
 
 
-int parseCommand(char *buffer, int length, int *state) 
+int main(int argc, char * argv[])
 {
-  char command[3];
-  char *pnt, *msgStart;
-  int strLength = strlen(buffer);
 
-  if(strLength < 2) {
-    return 0;
-  }
-
-  memcpy(command, buffer, 2);
-  command[2] = '\0';
+  char *handle, *host, *port;
+  double error;
+  int socket_num;
+      
+  handle = argv[1];
+  error = atof(argv[2]);
+  host = argv[3];
+  port = argv[4];
   
-  if(!strcmp(command, "%M") || !strcmp(command, "%m")) {
-
-    // check for space
-    if (!(pnt = strchr(buffer, ' '))) return 0;
-    
-    // check for space in position3
-    if((pnt - buffer + 1) != 3) return 0;
-    
-    // check msg length
-    msgStart = pnt + 1;
-    while (*msgStart != ' ' && *msgStart != '\0') {
-      msgStart++;
-    }
-    if(strlen(msgStart) >= 1000) {
-      printf("Message is too long.\n");
-      return 0;
-    }    
-    *state = MSG_SEND;    
-    
-  } else if (!strcmp(command, "%L") || !strcmp(command, "%l")) {
-    
-  } else if (!strcmp(command, "%E") || !strcmp(command, "%e")) {
-    *state = EXIT_SEND;
-  } else {
-    return 0;
-  }
+  if (argc != 5) { printf("usage: %s host-name port-number \n", argv[0]); exit(1); }
+  if (strlen(handle) > MAX_HANDLE) { printf("Handle name is too long\n"); exit(1); }
   
-  return 1;
+  sendErr_init(error, DROP_ON, FLIP_ON, DEBUG_OFF, RSEED_OFF);
+  socket_num = tcp_send_setup(host, port);  
+  
+  clientLoop(socket_num, handle);
+    
+  close(socket_num);
+  
+  return 0;
 }
 
-void printPrompt() 
+
+
+/**********************/
+/*   STATES/CONTROL   */
+/**********************/
+
+int clientLoop(int socket_num, char *handle)
 {
-  printf(">");
-  fflush(stdout);
+  char *send_buf, *read_buf, **activePeers;
+  int message_len, size;
+  int send_len = 0, checksum, seqNum, exitFlag;
+  int selectActive, state, waitCnt = 0;
+  int msgSeqTracker[MAX_CLIENTS];
+  uint32_t handleCount, currentHandle;
+  
+  send_buf = (char *) malloc(READ_BUFFER);
+  read_buf = (char *) malloc(READ_BUFFER);
+  if (!send_buf || !read_buf) {
+    perror("malloc"); exit(EXIT_FAILURE);
+  }
+
+  memset((int *)msgSeqTracker, 0, sizeof(msgSeqTracker));
+  activePeers = setupPeerTracking();
+  
+  state = HANDLE_SEND;
+  currentHandle = 1;
+  seqNum = 1;
+  exitFlag = 0;
+  
+  while(!exitFlag) {
+    
+    selectActive = selectSetup(socket_num, state);
+    
+    if (selectActive == SOCKET_ACTIVE) {      
+      memset(read_buf, 0, READ_BUFFER);
+      if((message_len = recv(socket_num, read_buf, READ_BUFFER, 0)) < 0) { perror("rec Error: "); exit(EXIT_FAILURE); }
+      if (!(checksum = in_cksum((unsigned short *)read_buf, message_len))){
+        exitFlag = handleResponse(read_buf, 
+                                  &state, 
+                                  &seqNum, 
+                                  socket_num, 
+                                  activePeers, 
+                                  msgSeqTracker, 
+                                  &handleCount, 
+                                  &currentHandle);
+      }      
+  
+    } else if (selectActive == STDIN_ACTIVE) {
+      
+      send_len = 0;
+      while ((send_buf[send_len] = getchar()) != '\n') {
+        send_len++;
+      }
+      send_buf[send_len] = '\0';      
+      
+      if(!parseCommand(send_buf, send_len, &state)) {
+        printf("Command Uknown\n");
+        printPrompt();
+        state = 0;        
+      }        
+    }  
+    
+    switch (state) {
+    case HANDLE_SEND:
+      size = buildHandleHeader(send_buf, handle, 1, seqNum);
+      if (sendErr(socket_num, send_buf, size, 0) < 0) { perror("Send Error: "); exit(EXIT_FAILURE); }  
+      state = HANDLE_WAIT;
+      waitCnt = 0;
+      break;
+  
+    case HANDLE_WAIT:
+      waitCnt++;
+      if(waitCnt >= 2) {
+        state = HANDLE_SEND;
+      }      
+      break;
+  
+    case MSG_SEND:
+      sendMsg(send_buf, socket_num, seqNum, handle);
+      state = MSG_WAIT;
+      waitCnt = 0;
+      break;
+  
+    case MSG_WAIT:
+      waitCnt++;
+      if(waitCnt >= 2) {
+        state = MSG_SEND;
+      }      
+      break;  
+
+    case EXIT_SEND:
+      size = buildSimpleHeader(send_buf, 8, seqNum);
+      if (sendErr(socket_num, send_buf, size, 0) < 0) { perror("Send Error: "); exit(EXIT_FAILURE); }  
+      state = EXIT_WAIT;
+      waitCnt = 0;
+      break;  
+
+    case EXIT_WAIT:
+      waitCnt++;
+      if(waitCnt >= 2) {
+        state = EXIT_SEND;
+      }      
+      break;
+    
+    case HANDLE_CNT_SEND:
+      size = buildSimpleHeader(send_buf, 10, seqNum);
+      if (sendErr(socket_num, send_buf, size, 0) < 0) { perror("Send Error: "); exit(EXIT_FAILURE); }  
+      state = HANDLE_CNT_WAIT;
+      waitCnt = 0;
+      break;  
+
+    case HANDLE_CNT_WAIT:
+      waitCnt++;
+      if(waitCnt >= 2) {
+        state = HANDLE_CNT_SEND;
+      }      
+      break;
+
+    case HANDLE_REQ_SEND:
+      size = buildCntHeader(send_buf, 12, seqNum, currentHandle);    
+      if (sendErr(socket_num, send_buf, size, 0) < 0) { perror("Send:"); exit(EXIT_FAILURE);}      
+      state = HANDLE_REQ_WAIT;
+      waitCnt = 0;      
+      break;
+
+    case HANDLE_REQ_WAIT:      
+      waitCnt++;
+      if(waitCnt >= 2) {
+        state = HANDLE_REQ_SEND;
+      }      
+      break;
+
+  
+    default:
+      break;
+    }
+  }
+  
+  freePeerTracking(activePeers);
+  free(send_buf);
+  free(read_buf);
+  
+  return 0;
+}
+
+
+int selectSetup(int socket_num, int state)
+{
+  fd_set readfds;
+  struct timeval timeout;
+
+  FD_ZERO(&readfds);
+  FD_SET(0, &readfds);           // STDIN
+  FD_SET(socket_num, &readfds);  // server  
+  timeout.tv_sec = 0;
+  timeout.tv_usec = 100000;
+  
+  if (state != 0) {
+    if(select(socket_num + 1, &readfds, NULL, NULL, &timeout) == -1) { perror("Select"); exit(EXIT_FAILURE); }
+  } else {
+    if(select(socket_num + 1, &readfds, NULL, NULL, NULL) == -1) { perror("Select"); exit(EXIT_FAILURE); }        
+  }
+ 
+  if (FD_ISSET(socket_num, &readfds)) {
+    return SOCKET_ACTIVE;
+  } else if (FD_ISSET(0, &readfds)) {
+    return STDIN_ACTIVE;
+  }
+  return 0;
+
 }
 
 
@@ -74,12 +222,14 @@ int handleResponse(char *read_buf,
                    int *seqNum, 
                    int socket_num, 
                    char **activePeers, 
-                   int *msgSeqTracker) 
+                   int *msgSeqTracker,
+                   uint32_t *handleCount,
+                   uint32_t *currentHandle) 
 {
   PACKETHEAD header;
   int exitFlag = 0;
   char tmpHandle[MAX_HANDLE];
-  memcpy(&header, read_buf, sizeof(PACKETHEAD));  
+  memcpy(&header, read_buf, sizeof(PACKETHEAD));    
 
   switch (header.flag) {
   case 2: // good handle
@@ -108,6 +258,24 @@ int handleResponse(char *read_buf,
     exitFlag = 1;
     break;
 
+  case 11: // Server ACKs cnt request
+    *handleCount = (uint32_t)grabCntHeader(read_buf);
+    *state = HANDLE_REQ_SEND;
+    *seqNum = *seqNum + 1;
+    break;
+
+  case 13: // Server ACKs cnt request    
+    grabHandleHeader(read_buf, (char *)tmpHandle);
+    printf("%d) %s\n", *currentHandle, tmpHandle);
+    if(*currentHandle == *handleCount) {
+      *currentHandle = 1;
+      *state = 0;
+    } else {
+      (*currentHandle)++;
+      *state = HANDLE_REQ_SEND;        
+    }
+    *seqNum = *seqNum + 1;
+    break;
     
   case 255: // message success
     *state = 0;
@@ -126,186 +294,55 @@ int handleResponse(char *read_buf,
 }
 
 
-int selectSetup(socket_num, state)
+
+
+int parseCommand(char *buffer, int length, int *state) 
 {
-  fd_set readfds;
-  struct timeval timeout;
+  char command[3];
+  char *pnt, *msgStart;
+  int strLength = strlen(buffer);
 
-  FD_ZERO(&readfds);
-  FD_SET(0, &readfds);           // STDIN
-  FD_SET(socket_num, &readfds);  // server  
-  timeout.tv_sec = 0;
-  timeout.tv_usec = 100000;
-  
-  if (state != 0) {
-    if(select(socket_num + 1, &readfds, NULL, NULL, &timeout) == -1) { perror("Select"); exit(EXIT_FAILURE); }
-  } else {
-    if(select(socket_num + 1, &readfds, NULL, NULL, NULL) == -1) { perror("Select"); exit(EXIT_FAILURE); }        
-  }
- 
-  if (FD_ISSET(socket_num, &readfds)) {
-    return SOCKET_ACTIVE;
-  } else if (FD_ISSET(0, &readfds)) {
-    return STDIN_ACTIVE;
-  }
-  return 0;
-
-}
-
-int clientLoop(int socket_num, char *handle)
-{
-  char *send_buf, *read_buf, **activePeers;
-  int message_len, size;
-  int send_len = 0;
-  int checksum, seqNum = 1, exitFlag = 0;
-  int state, waitCnt = 0;
-  int msgSeqTracker[MAX_CLIENTS];
-  int selectActive;
-  
-
-  send_buf = (char *) malloc(READ_BUFFER);
-  read_buf = (char *) malloc(READ_BUFFER);
-  if (!send_buf || !read_buf) {
-    perror("malloc"); exit(EXIT_FAILURE);
+  if(strLength < 2) {
+    return 0;
   }
 
-  memset((int *)msgSeqTracker, 0, sizeof(msgSeqTracker));
-  activePeers = setupPeerTracking();
+  memcpy(command, buffer, 2);
+  command[2] = '\0';
   
-  state = HANDLE_SEND;
-  while(!exitFlag) {
+  if(!strcmp(command, "%M") || !strcmp(command, "%m")) {
+    // check for space
+    if (!(pnt = strchr(buffer, ' '))) return 0;
     
-    selectActive = selectSetup(socket_num, state);
+    // check for space in position3
+    if((pnt - buffer + 1) != 3) return 0;
     
-    if (selectActive == SOCKET_ACTIVE) {
-      
-      memset(read_buf, 0, READ_BUFFER);
-      if((message_len = recv(socket_num, read_buf, READ_BUFFER, 0)) < 0) { perror("rec Error: "); exit(EXIT_FAILURE); }
-      if ((checksum = in_cksum((unsigned short *)read_buf, message_len))) {
-        //printf("checksum error. msg_len: %d\n", message_len);        
-      } else {
-        exitFlag = handleResponse(read_buf, &state, &seqNum, socket_num, activePeers, msgSeqTracker);
-      }      
-  
-    } else if (selectActive == STDIN_ACTIVE) {
-      
-      send_len = 0;
-      while ((send_buf[send_len] = getchar()) != '\n') {
-        send_len++;
-      }
-      send_buf[send_len] = '\0';      
-      
-      if(!parseCommand(send_buf, send_len, &state)) {
-        printf("Command Uknown\n");
-        printPrompt();
-        state = 0;        
-      }        
-    }  
-    
-    //printf("state: %d\n", state);
-    switch (state) {
-    case HANDLE_SEND:
-      size = setupHandle(send_buf, handle, seqNum);
-      if (sendErr(socket_num, send_buf, size, 0) < 0) { perror("Send Error: "); exit(EXIT_FAILURE); }  
-      state = HANDLE_WAIT;
-      waitCnt = 0;
-      break;
-  
-    case HANDLE_WAIT:
-      waitCnt++;
-      if(waitCnt >= 2) {
-        state = HANDLE_SEND;
-      }      
-      break;
-  
-    case MSG_SEND:
-      sendMsg(send_buf, socket_num, seqNum, handle);
-      state = MSG_WAIT;
-      waitCnt = 0;
-      break;
-  
-    case MSG_WAIT:
-      waitCnt++;
-      if(waitCnt >= 2) {
-        state = MSG_SEND;
-      }      
-      break;  
-
-    case EXIT_SEND:
-      size = buildSimpleHeader(send_buf, 8, seqNum);
-      //printf("szie: %d\n", size);
-      if (sendErr(socket_num, send_buf, size, 0) < 0) { perror("Send Error: "); exit(EXIT_FAILURE); }  
-      state = EXIT_WAIT;
-      waitCnt = 0;
-      break;  
-
-    case EXIT_WAIT:
-      waitCnt++;
-      if(waitCnt >= 2) {
-        state = EXIT_SEND;
-      }      
-      break;
-  
-    default:
-      break;
+    // check msg length
+    msgStart = pnt + 1;
+    while (*msgStart != ' ' && *msgStart != '\0') {
+      msgStart++;
     }
+    if(strlen(msgStart) >= 1000) {
+      printf("Message is too long.\n");
+      return 0;
+    }    
+    *state = MSG_SEND;    
+  } else if (!strcmp(command, "%L") || !strcmp(command, "%l")) {
+    *state = HANDLE_CNT_SEND;
+  } else if (!strcmp(command, "%E") || !strcmp(command, "%e")) {
+    *state = EXIT_SEND;
+  } else {
+    return 0;
   }
   
-  freePeerTracking(activePeers);
-  free(send_buf);
-  free(read_buf);
-  
-  return 0;
-
+  return 1;
 }
 
-
-int main(int argc, char * argv[])
+void printPrompt()
 {
-
-  char *handle, *host, *port;
-  double error;
-  int socket_num;
-      
-  handle = argv[1];
-  error = atof(argv[2]);
-  host = argv[3];
-  port = argv[4];
-  
-  if (argc != 5) { printf("usage: %s host-name port-number \n", argv[0]); exit(1); }
-  if (strlen(handle) > MAX_HANDLE) { printf("Handle name is too long\n"); exit(1); }
-  
-  sendErr_init(error, DROP_ON, FLIP_ON, DEBUG_OFF, RSEED_OFF);
-  socket_num = tcp_send_setup(host, port);  
-  
-  clientLoop(socket_num, handle);
-    
-  close(socket_num);
-  
-  return 0;
+  printf(">");
+  fflush(stdout);
 }
 
-
-/* Setup send_buf to include header and handle name for transmision to the server */
-int setupHandle(char *send_buf, char *handle, int seqNum) 
-{
-  PACKETHEAD header;
-  int size = sizeof(PACKETHEAD) + 1 + strlen(handle);
-  
-  memset(&header, 0, sizeof(PACKETHEAD));
-  header.seq_num = htonl(seqNum);
-  header.checksum = 0;
-  header.flag = 1;
-  
-  memcpy(send_buf, &header, sizeof(PACKETHEAD)); 
-  send_buf[sizeof(PACKETHEAD)] = strlen(handle);
-  memcpy(&(send_buf[sizeof(PACKETHEAD) + 1]), handle, strlen(handle));
-
-  header.checksum =  in_cksum((unsigned short *)send_buf, size);  
-  memcpy(send_buf, &header, sizeof(PACKETHEAD));
-
-  return size;
-}
 
 
 /*******************/
@@ -388,15 +425,10 @@ void printMsg(char *buffer, char **activePeers, int *msgSeqTracker, int state)
   
   memcpy(&header, buffer, sizeof(PACKETHEAD));
 
-
   if ((peerId = checkPeerExists(senderHandle, activePeers)) < 0) {
-    //printf("Adding Peer: %s\n", senderHandle);
     peerId= addPeer(senderHandle, activePeers);
     msgSeqTracker[peerId] = 0;
   }
-  //printf("--Peer Table--\n");
-  //printPeerTable(activePeers, msgSeqTracker);    
-  //printf("seqNum: %d\n", ntohl(header.seq_num));
   
   if(msgSeqTracker[peerId] < ntohl(header.seq_num)) {
     if(strcmp(receiverHandle, senderHandle)) {
@@ -404,8 +436,9 @@ void printMsg(char *buffer, char **activePeers, int *msgSeqTracker, int state)
     }
     printf("%s: %s\n", senderHandle, &(buffer[msgStart]));  
     msgSeqTracker[peerId] = ntohl(header.seq_num);
-    if(state != MSG_WAIT)
+    if(state != MSG_WAIT) {
       printPrompt();
+    }
   } 
   
 }
@@ -443,7 +476,6 @@ void sendMsgAck(char *buffer, int socket_num, int seqNum)
   header.checksum = in_cksum((unsigned short *)ackBuffer, locator);
   memcpy(ackBuffer, &header, sizeof(PACKETHEAD));
   
-  //printf("send length: %d\n", locator);
   if (sendErr(socket_num, ackBuffer, locator, 0) < 0) { perror("Send Error: "); exit(EXIT_FAILURE); }
 }
 

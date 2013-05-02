@@ -17,6 +17,10 @@
 #define MSG_WAIT        4
 #define EXIT_SEND       5
 #define EXIT_WAIT       6
+#define HANDLE_CNT_SEND 7
+#define HANDLE_CNT_WAIT 8
+#define HANDLE_REQ_SEND 9
+#define HANDLE_REQ_WAIT 10
 
 #define SOCKET_ACTIVE   1
 #define STDIN_ACTIVE    2
@@ -32,11 +36,11 @@ typedef struct packet_head {
 
 // Server
 int tcp_server_setup(int port);
-int selectLoop(int server_socket);
+int serverLoop(int server_socket);
 int setupNewClient(int server_socket, int *client_sockets);
 int fdsMax(int server_socket, int *client_sockets);
 
-int takeAction(char *buffer, int bufferLen, int active_socket, int *client_sockets, char **handle_table);
+int takeAction(char *buffer, int bufferLen, int active_socket, int *client_sockets, char **handle_table, int *seqNum);
 int addHandle(char *buffer, int active_socket, int *client_sockets, char **handle_table);
 
 void removeSocket(int activeSocket, int *client_sockets, char **handle_table);
@@ -47,9 +51,20 @@ void sendHandleNoExist(int active_socket, char *buffer);
 
 
 // Client
+int parseCommand(char *buffer, int length, int *state);
 int tcp_send_setup(char *host_name, char *port);
-int setupHandle(char *send_buf, char *handle, int seqNum);
 void printPrompt();
+int selectSetup(int socket_num, int state);
+int clientLoop(int socket_num, char *handle);
+int handleResponse(char *read_buf, 
+                   int *state, 
+                   int *seqNum, 
+                   int socket_num, 
+                   char **activePeers, 
+                   int *msgSeqTracker,
+                   uint32_t *handleCount,
+                   uint32_t *currentHandle);
+
 
 int sendMsg(char *buffer, int socket_num, int seq, char *srcHandle);
 void printMsg(char *buffer, char **activePeers, int *msgSeqTracker, int state);
@@ -62,11 +77,20 @@ void freePeerTracking(char **activePeers);
 void printPeerTable(char **activePeers, int *msgSeqTracker);
 
 
+
+
 /* General */
 int grabHeader(PACKETHEAD *header, char *buffer, int len);  
 void printHeader(PACKETHEAD *header);
 
 int buildSimpleHeader(char *buffer, int flag, int seqNum);
+int buildCntHeader(char *buffer, int flag, int seqNum, uint32_t count);
+int buildHandleHeader(char *buffer, char *handle, int flag, int seqNum);
+
 void printClients(int *client_sockets, char **handle_table);
+uint32_t clientCount(char **handle_table);
+
+int grabCntHeader(char *buffer);
+int grabHandleHeader(char *buffer, char *handle);
 
 #endif
